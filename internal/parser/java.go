@@ -52,7 +52,7 @@ func parseJava(content []byte) []model.Endpoint {
 		if name == "RequestMapping" {
 			httpMethod = javaRequestMappingMethod(node, content)
 			if httpMethod == "" {
-				httpMethod = "GET"
+				return // no method attr = class-level prefix, skip
 			}
 		}
 

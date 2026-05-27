@@ -44,15 +44,22 @@ func parseTypeScript(content []byte) []model.Endpoint {
 func nestClassEndpoints(classNode *sitter.Node, content []byte) []model.Endpoint {
 	basePath := ""
 
-	// Find @Controller on the class
-	for i := 0; i < int(classNode.ChildCount()); i++ {
-		child := classNode.Child(i)
-		if child.Type() == "decorator" {
-			if path, ok := decoratorArg(child, "Controller", content); ok {
-				basePath = path
+	// @Controller may be on parent export_statement (export class Foo) or direct child
+	searchForController := func(parent *sitter.Node) {
+		if parent == nil {
+			return
+		}
+		for i := 0; i < int(parent.ChildCount()); i++ {
+			child := parent.Child(i)
+			if child.Type() == "decorator" {
+				if path, ok := decoratorArg(child, "Controller", content); ok {
+					basePath = path
+				}
 			}
 		}
 	}
+	searchForController(classNode.Parent())
+	searchForController(classNode)
 
 	// Find class body
 	var classBody *sitter.Node
@@ -67,25 +74,28 @@ func nestClassEndpoints(classNode *sitter.Node, content []byte) []model.Endpoint
 	}
 
 	var endpoints []model.Endpoint
+	var pendingDecorators []*sitter.Node
 
+	// Decorators are siblings of method_definition inside class_body
 	for i := 0; i < int(classBody.ChildCount()); i++ {
 		member := classBody.Child(i)
-		if member.Type() != "method_definition" {
-			continue
-		}
-		for j := 0; j < int(member.ChildCount()); j++ {
-			child := member.Child(j)
-			if child.Type() != "decorator" {
-				continue
-			}
-			for decoratorName, httpMethod := range nestDecorators {
-				if path, ok := decoratorArg(child, decoratorName, content); ok {
-					endpoints = append(endpoints, model.Endpoint{
-						Method: httpMethod,
-						Path:   joinPaths(basePath, path),
-					})
+		switch member.Type() {
+		case "decorator":
+			pendingDecorators = append(pendingDecorators, member)
+		case "method_definition":
+			for _, dec := range pendingDecorators {
+				for decoratorName, httpMethod := range nestDecorators {
+					if path, ok := decoratorArg(dec, decoratorName, content); ok {
+						endpoints = append(endpoints, model.Endpoint{
+							Method: httpMethod,
+							Path:   joinPaths(basePath, path),
+						})
+					}
 				}
 			}
+			pendingDecorators = nil
+		default:
+			pendingDecorators = nil
 		}
 	}
 	return endpoints
@@ -117,6 +127,9 @@ func decoratorArg(decoratorNode *sitter.Node, name string, content []byte) (stri
 }
 
 func joinPaths(base, path string) string {
+	if base != "" && !strings.HasPrefix(base, "/") {
+		base = "/" + base
+	}
 	base = strings.TrimRight(base, "/")
 	if path == "" {
 		return base
