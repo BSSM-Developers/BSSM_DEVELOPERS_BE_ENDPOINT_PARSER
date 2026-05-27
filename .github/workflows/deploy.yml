@@ -92,7 +92,7 @@ jobs:
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
         run: |
-          sed -i -E "s|donghyunking/bssm-dev-endpoint-parser@sha256:[a-f0-9]+|donghyunking/bssm-dev-endpoint-parser@${DIGEST}|g" \
+          sed -i -E "s|donghyunking/bssm-dev-endpoint-parser@sha256:[^[:space:]]+|donghyunking/bssm-dev-endpoint-parser@${DIGEST}|g" \
             ${TARGET}/endpoint-parser/deployment.yaml
 
       - name: Commit and push
