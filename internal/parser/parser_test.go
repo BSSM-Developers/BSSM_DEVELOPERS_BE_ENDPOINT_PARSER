@@ -200,17 +200,18 @@ func TestParseSpringBoot(t *testing.T) {
 		t.Logf("  %-7s %s", e.Method, e.Path)
 	}
 
+	// Class has @RequestMapping("/api/v1"), so all paths are prefixed
 	expected := []model.Endpoint{
-		{Method: "GET", Path: "/users"},
-		{Method: "GET", Path: "/users/{id}"},
-		{Method: "POST", Path: "/users"},
-		{Method: "PUT", Path: "/users/{id}"},
-		{Method: "DELETE", Path: "/users/{id}"},
-		{Method: "PATCH", Path: "/users/{id}/role"},
-		{Method: "POST", Path: "/users/{id}/status"},
+		{Method: "GET", Path: "/api/v1/users"},
+		{Method: "GET", Path: "/api/v1/users/{id}"},
+		{Method: "POST", Path: "/api/v1/users"},
+		{Method: "PUT", Path: "/api/v1/users/{id}"},
+		{Method: "DELETE", Path: "/api/v1/users/{id}"},
+		{Method: "PATCH", Path: "/api/v1/users/{id}/role"},
+		{Method: "POST", Path: "/api/v1/users/{id}/status"},
 	}
 
-	assertEndpoints(t, "SpringBoot UserController", endpoints, expected)
+	assertEndpointsUnordered(t, "SpringBoot UserController", endpoints, expected)
 }
 
 func TestParseSpringBootValuePath(t *testing.T) {

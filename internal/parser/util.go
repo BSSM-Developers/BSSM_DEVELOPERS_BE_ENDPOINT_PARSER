@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"strings"
+
 	sitter "github.com/smacker/go-tree-sitter"
 
 	"endpoint-parser/internal/model"
@@ -43,4 +45,39 @@ func unquote(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// deduplicateEndpoints removes duplicate (method, path) pairs while preserving order.
+func deduplicateEndpoints(endpoints []model.Endpoint) []model.Endpoint {
+	seen := make(map[string]bool, len(endpoints))
+	result := make([]model.Endpoint, 0, len(endpoints))
+	for _, e := range endpoints {
+		key := e.Method + ":" + e.Path
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+// joinPaths concatenates a prefix and a relative path, ensuring a single leading slash.
+// joinPaths("/api/v1", "users") → "/api/v1/users"
+// joinPaths("/api/v1", "")     → "/api/v1"
+// joinPaths("", "/users")      → "/users"
+func joinPaths(base, path string) string {
+	if base != "" && !strings.HasPrefix(base, "/") {
+		base = "/" + base
+	}
+	base = strings.TrimRight(base, "/")
+	if path == "" {
+		return base
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if base == "" {
+		return path
+	}
+	return base + path
 }

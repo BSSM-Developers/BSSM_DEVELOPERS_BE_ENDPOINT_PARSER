@@ -1,8 +1,6 @@
 package parser
 
 import (
-	"strings"
-
 	sitter "github.com/smacker/go-tree-sitter"
 	tsLang "github.com/smacker/go-tree-sitter/typescript/typescript"
 
@@ -11,11 +9,13 @@ import (
 
 // nestDecorators maps NestJS HTTP decorator names to HTTP verbs.
 var nestDecorators = map[string]string{
-	"Get":    "GET",
-	"Post":   "POST",
-	"Put":    "PUT",
-	"Delete": "DELETE",
-	"Patch":  "PATCH",
+	"Get":     "GET",
+	"Post":    "POST",
+	"Put":     "PUT",
+	"Delete":  "DELETE",
+	"Patch":   "PATCH",
+	"Head":    "HEAD",
+	"Options": "OPTIONS",
 }
 
 type typeScriptParser struct{}
@@ -144,33 +144,3 @@ func decoratorArg(decoratorNode *sitter.Node, name string, content []byte) (stri
 	return "", false
 }
 
-// joinPaths concatenates a base path (controller prefix) with a method path.
-func joinPaths(base, path string) string {
-	if base != "" && !strings.HasPrefix(base, "/") {
-		base = "/" + base
-	}
-	base = strings.TrimRight(base, "/")
-	if path == "" {
-		return base
-	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	if base == "" {
-		return path
-	}
-	return base + path
-}
-
-func deduplicateEndpoints(endpoints []model.Endpoint) []model.Endpoint {
-	seen := make(map[string]bool, len(endpoints))
-	result := make([]model.Endpoint, 0, len(endpoints))
-	for _, e := range endpoints {
-		key := e.Method + ":" + e.Path
-		if !seen[key] {
-			seen[key] = true
-			result = append(result, e)
-		}
-	}
-	return result
-}
