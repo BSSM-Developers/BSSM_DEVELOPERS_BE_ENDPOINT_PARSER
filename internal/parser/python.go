@@ -85,7 +85,11 @@ func extractRoutePathFromArgs(argsNode *sitter.Node, content []byte) string {
 		child := argsNode.Child(i)
 		switch child.Type() {
 		case "string":
-			return unquote(nodeText(child, content))
+			text := nodeText(child, content)
+			if !isPythonStringLiteral(text) {
+				continue
+			}
+			return unquote(text)
 		case "keyword_argument":
 			if path := extractPathKwarg(child, content); path != "" {
 				kwargPath = path
@@ -103,9 +107,21 @@ func extractPathKwarg(kwarg *sitter.Node, content []byte) string {
 		return ""
 	}
 	if nodeText(nameNode, content) == "path" && valNode.Type() == "string" {
-		return unquote(nodeText(valNode, content))
+		text := nodeText(valNode, content)
+		if !isPythonStringLiteral(text) {
+			return ""
+		}
+		return unquote(text)
 	}
 	return ""
+}
+
+// isPythonStringLiteral returns false for f-strings (f"..." or f'...').
+func isPythonStringLiteral(text string) bool {
+	if len(text) < 2 {
+		return false
+	}
+	return !(text[0] == 'f' && (text[1] == '"' || text[1] == '\''))
 }
 
 // extractFlaskRoute handles @app.route("/path", methods=["GET", "POST"]).
@@ -119,7 +135,10 @@ func extractFlaskRoute(argsNode *sitter.Node, content []byte) []model.Endpoint {
 		switch child.Type() {
 		case "string":
 			if path == "" {
-				path = unquote(nodeText(child, content))
+				text := nodeText(child, content)
+				if isPythonStringLiteral(text) {
+					path = unquote(text)
+				}
 			}
 		case "keyword_argument":
 			nameNode := child.ChildByFieldName("name")

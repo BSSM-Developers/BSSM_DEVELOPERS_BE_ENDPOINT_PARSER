@@ -16,6 +16,7 @@ var nestDecorators = map[string]string{
 	"Patch":   "PATCH",
 	"Head":    "HEAD",
 	"Options": "OPTIONS",
+	"All":     "ALL",
 }
 
 type typeScriptParser struct{}
@@ -32,7 +33,7 @@ func extractTypeScriptEndpoints(root *sitter.Node, content []byte) []model.Endpo
 	var endpoints []model.Endpoint
 
 	walkTree(root, func(node *sitter.Node) {
-		if node.Type() == "class_declaration" {
+		if node.Type() == "class_declaration" || node.Type() == "abstract_class_declaration" {
 			endpoints = append(endpoints, extractNestControllerEndpoints(node, content)...)
 		}
 	})
@@ -89,7 +90,7 @@ func extractMethodEndpoints(classBody *sitter.Node, basePath string, content []b
 		switch member.Type() {
 		case "decorator":
 			pendingDecorators = append(pendingDecorators, member)
-		case "method_definition":
+		case "method_definition", "abstract_method_signature":
 			for _, dec := range pendingDecorators {
 				for decoratorName, httpMethod := range nestDecorators {
 					if path, ok := decoratorArg(dec, decoratorName, content); ok {
@@ -101,6 +102,23 @@ func extractMethodEndpoints(classBody *sitter.Node, basePath string, content []b
 				}
 			}
 			pendingDecorators = nil
+		case "public_field_definition":
+			// abstract decorated members have their decorator as a child, not a sibling
+			pendingDecorators = nil
+			for j := 0; j < int(member.ChildCount()); j++ {
+				child := member.Child(j)
+				if child.Type() != "decorator" {
+					continue
+				}
+				for decoratorName, httpMethod := range nestDecorators {
+					if path, ok := decoratorArg(child, decoratorName, content); ok {
+						endpoints = append(endpoints, model.Endpoint{
+							Method: httpMethod,
+							Path:   joinPaths(basePath, path),
+						})
+					}
+				}
+			}
 		default:
 			pendingDecorators = nil
 		}

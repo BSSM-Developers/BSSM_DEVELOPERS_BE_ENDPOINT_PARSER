@@ -65,19 +65,29 @@ func deduplicateEndpoints(endpoints []model.Endpoint) []model.Endpoint {
 // joinPaths("/api/v1", "users") → "/api/v1/users"
 // joinPaths("/api/v1", "")     → "/api/v1"
 // joinPaths("", "/users")      → "/users"
+// joinPaths("", "")            → "/"
 func joinPaths(base, path string) string {
 	if base != "" && !strings.HasPrefix(base, "/") {
 		base = "/" + base
 	}
 	base = strings.TrimRight(base, "/")
 	if path == "" {
+		if base == "" {
+			return "/"
+		}
 		return base
 	}
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	var result string
 	if base == "" {
-		return path
+		result = path
+	} else {
+		result = base + path
 	}
-	return base + path
+	if len(result) > 1 {
+		result = strings.TrimRight(result, "/")
+	}
+	return result
 }

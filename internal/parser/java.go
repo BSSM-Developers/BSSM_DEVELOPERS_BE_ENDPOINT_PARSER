@@ -45,16 +45,16 @@ func extractSpringAnnotationEndpoints(node *sitter.Node, content []byte) []model
 	}
 	name := nodeText(nameNode, content)
 
-	httpMethod, isShorthand := springMappings[name]
-	if !isShorthand && name != "RequestMapping" {
-		return nil
-	}
-
-	if name == "RequestMapping" {
-		httpMethod = extractRequestMappingMethod(node, content)
-		if httpMethod == "" {
+	var httpMethods []string
+	if httpMethod, isShorthand := springMappings[name]; isShorthand {
+		httpMethods = []string{httpMethod}
+	} else if name == "RequestMapping" {
+		httpMethods = extractRequestMappingMethods(node, content)
+		if len(httpMethods) == 0 {
 			return nil // no method attr = class-level prefix annotation, not an endpoint
 		}
+	} else {
+		return nil
 	}
 
 	paths := extractAnnotationPaths(node, content)
@@ -64,12 +64,14 @@ func extractSpringAnnotationEndpoints(node *sitter.Node, content []byte) []model
 
 	basePath := findEnclosingClassBasePath(node, content)
 
-	endpoints := make([]model.Endpoint, 0, len(paths))
-	for _, path := range paths {
-		endpoints = append(endpoints, model.Endpoint{
-			Method: httpMethod,
-			Path:   joinPaths(basePath, path),
-		})
+	endpoints := make([]model.Endpoint, 0, len(httpMethods)*len(paths))
+	for _, httpMethod := range httpMethods {
+		for _, path := range paths {
+			endpoints = append(endpoints, model.Endpoint{
+				Method: httpMethod,
+				Path:   joinPaths(basePath, path),
+			})
+		}
 	}
 	return endpoints
 }
@@ -156,7 +158,7 @@ func extractClassBasePath(classNode *sitter.Node, content []byte) string {
 				continue
 			}
 			// Only use as prefix if no explicit method= attribute
-			if extractRequestMappingMethod(annot, content) != "" {
+			if len(extractRequestMappingMethods(annot, content)) > 0 {
 				continue
 			}
 			paths := extractAnnotationPaths(annot, content)
@@ -168,12 +170,13 @@ func extractClassBasePath(classNode *sitter.Node, content []byte) string {
 	return ""
 }
 
-// extractRequestMappingMethod reads the method= attribute from @RequestMapping.
-// Returns "" if no method attribute is present.
-func extractRequestMappingMethod(annotation *sitter.Node, content []byte) string {
+// extractRequestMappingMethods reads the method= attribute from @RequestMapping.
+// Supports single (method=RequestMethod.GET) and array (method={GET,POST}) values.
+// Returns nil if no method attribute is present (class-level prefix annotation).
+func extractRequestMappingMethods(annotation *sitter.Node, content []byte) []string {
 	argList := annotation.ChildByFieldName("arguments")
 	if argList == nil {
-		return ""
+		return nil
 	}
 	for i := 0; i < int(argList.ChildCount()); i++ {
 		child := argList.Child(i)
@@ -188,12 +191,30 @@ func extractRequestMappingMethod(annotation *sitter.Node, content []byte) string
 		if val == nil {
 			continue
 		}
-		text := nodeText(val, content)
-		for _, m := range []string{"GET", "POST", "PUT", "DELETE", "PATCH"} {
-			if strings.Contains(text, m) {
-				return m
-			}
+		if val.Type() == "element_value_array_initializer" {
+			return extractMethodsFromArray(val, content)
+		}
+		return extractMethodsFromText(nodeText(val, content))
+	}
+	return nil
+}
+
+// extractMethodsFromArray collects HTTP verbs from {RequestMethod.GET, RequestMethod.POST}.
+func extractMethodsFromArray(array *sitter.Node, content []byte) []string {
+	var methods []string
+	for i := 0; i < int(array.ChildCount()); i++ {
+		methods = append(methods, extractMethodsFromText(nodeText(array.Child(i), content))...)
+	}
+	return methods
+}
+
+// extractMethodsFromText scans a text fragment for known HTTP verb names.
+func extractMethodsFromText(text string) []string {
+	var methods []string
+	for _, m := range []string{"GET", "POST", "PUT", "DELETE", "PATCH"} {
+		if strings.Contains(text, m) {
+			methods = append(methods, m)
 		}
 	}
-	return ""
+	return methods
 }
