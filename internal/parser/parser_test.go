@@ -307,7 +307,7 @@ func TestParseNestJS(t *testing.T) {
 	assertEndpoints(t, "NestJS", endpoints, expected)
 }
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 func assertEndpoints(t *testing.T, name string, got []model.Endpoint, want []model.Endpoint) {
 	t.Helper()
@@ -320,5 +320,25 @@ func assertEndpoints(t *testing.T, name string, got []model.Endpoint, want []mod
 		if g.Method != w.Method || g.Path != w.Path {
 			t.Errorf("[%s] endpoint[%d]: got %s %s, want %s %s", name, i, g.Method, g.Path, w.Method, w.Path)
 		}
+	}
+}
+
+// assertEndpointsUnordered checks same set of endpoints regardless of order.
+func assertEndpointsUnordered(t *testing.T, name string, got []model.Endpoint, want []model.Endpoint) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("[%s] endpoint count: got %d, want %d", name, len(got), len(want))
+		return
+	}
+	counts := make(map[string]int)
+	for _, e := range want {
+		counts[e.Method+":"+e.Path]++
+	}
+	for _, e := range got {
+		key := e.Method + ":" + e.Path
+		if counts[key] <= 0 {
+			t.Errorf("[%s] unexpected endpoint: %s %s", name, e.Method, e.Path)
+		}
+		counts[key]--
 	}
 }

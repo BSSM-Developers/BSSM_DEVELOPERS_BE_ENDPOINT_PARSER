@@ -9,69 +9,169 @@ import (
 	"endpoint-parser/internal/model"
 )
 
-var pythonLang = python.GetLanguage()
+type pythonParser struct{}
 
-func parsePython(content []byte) []model.Endpoint {
-	p := sitter.NewParser()
-	p.SetLanguage(pythonLang)
-	tree := p.Parse(nil, content)
-	defer tree.Close()
+func (pythonParser) Language() model.Language { return model.LangPython }
 
+func (pythonParser) Parse(content []byte) []model.Endpoint {
+	return parseWithTreeSitter(python.GetLanguage(), content, extractFastAPIEndpoints)
+}
+
+// extractFastAPIEndpoints collects @app.get / @router.post / @app.route decorators.
+func extractFastAPIEndpoints(root *sitter.Node, content []byte) []model.Endpoint {
 	var endpoints []model.Endpoint
-
-	walkTree(tree.RootNode(), func(node *sitter.Node) {
+	walkTree(root, func(node *sitter.Node) {
 		if node.Type() != "decorator" {
 			return
 		}
 		for i := 0; i < int(node.ChildCount()); i++ {
 			child := node.Child(i)
-			if child.Type() != "call" {
-				continue
-			}
-			method, path := pythonRouteFromCall(child, content)
-			if method != "" && path != "" {
-				endpoints = append(endpoints, model.Endpoint{Method: method, Path: path})
+			if child.Type() == "call" {
+				endpoints = append(endpoints, extractRouteFromCall(child, content)...)
 			}
 		}
 	})
-
 	return endpoints
 }
 
-func pythonRouteFromCall(call *sitter.Node, content []byte) (string, string) {
+func extractRouteFromCall(call *sitter.Node, content []byte) []model.Endpoint {
 	funcNode := call.ChildByFieldName("function")
 	argsNode := call.ChildByFieldName("arguments")
 	if funcNode == nil || argsNode == nil {
-		return "", ""
+		return nil
 	}
 
-	var methodName string
+	methodName := extractCallMethodName(funcNode, content)
+	if methodName == "" {
+		return nil
+	}
+
+	// Flask / Werkzeug: @app.route("/path", methods=["GET", "POST"])
+	if strings.ToLower(methodName) == "route" {
+		return extractFlaskRoute(argsNode, content)
+	}
+
+	httpMethod := toHTTPMethod(methodName)
+	if httpMethod == "" {
+		return nil
+	}
+
+	path := extractRoutePathFromArgs(argsNode, content)
+	if path == "" {
+		return nil
+	}
+	return []model.Endpoint{{Method: httpMethod, Path: path}}
+}
+
+// extractCallMethodName returns the method name from an attribute call (router.get → "get")
+// or a bare identifier call (get → "get").
+func extractCallMethodName(funcNode *sitter.Node, content []byte) string {
 	switch funcNode.Type() {
 	case "attribute":
 		attr := funcNode.ChildByFieldName("attribute")
 		if attr != nil {
-			methodName = nodeText(attr, content)
+			return nodeText(attr, content)
 		}
 	case "identifier":
-		methodName = nodeText(funcNode, content)
+		return nodeText(funcNode, content)
 	}
+	return ""
+}
 
-	httpMethod := pythonHTTPMethod(methodName)
-	if httpMethod == "" {
-		return "", ""
+// extractRoutePathFromArgs finds the route path: positional string first, then path= kwarg.
+func extractRoutePathFromArgs(argsNode *sitter.Node, content []byte) string {
+	var kwargPath string
+	for i := 0; i < int(argsNode.ChildCount()); i++ {
+		child := argsNode.Child(i)
+		switch child.Type() {
+		case "string":
+			return unquote(nodeText(child, content))
+		case "keyword_argument":
+			if path := extractPathKwarg(child, content); path != "" {
+				kwargPath = path
+			}
+		}
 	}
+	return kwargPath
+}
+
+// extractPathKwarg reads the value from a `path="..."` keyword argument node.
+func extractPathKwarg(kwarg *sitter.Node, content []byte) string {
+	nameNode := kwarg.ChildByFieldName("name")
+	valNode := kwarg.ChildByFieldName("value")
+	if nameNode == nil || valNode == nil {
+		return ""
+	}
+	if nodeText(nameNode, content) == "path" && valNode.Type() == "string" {
+		return unquote(nodeText(valNode, content))
+	}
+	return ""
+}
+
+// extractFlaskRoute handles @app.route("/path", methods=["GET", "POST"]).
+// Returns one Endpoint per HTTP method in the methods list.
+func extractFlaskRoute(argsNode *sitter.Node, content []byte) []model.Endpoint {
+	path := ""
+	var methods []string
 
 	for i := 0; i < int(argsNode.ChildCount()); i++ {
 		child := argsNode.Child(i)
-		if child.Type() == "string" {
-			return httpMethod, unquote(nodeText(child, content))
+		switch child.Type() {
+		case "string":
+			if path == "" {
+				path = unquote(nodeText(child, content))
+			}
+		case "keyword_argument":
+			nameNode := child.ChildByFieldName("name")
+			valNode := child.ChildByFieldName("value")
+			if nameNode == nil || valNode == nil {
+				continue
+			}
+			switch nodeText(nameNode, content) {
+			case "path":
+				if path == "" && valNode.Type() == "string" {
+					path = unquote(nodeText(valNode, content))
+				}
+			case "methods":
+				methods = extractFlaskMethods(valNode, content)
+			}
 		}
 	}
-	return "", ""
+
+	if path == "" {
+		return nil
+	}
+	if len(methods) == 0 {
+		methods = []string{"GET"}
+	}
+
+	endpoints := make([]model.Endpoint, 0, len(methods))
+	for _, m := range methods {
+		endpoints = append(endpoints, model.Endpoint{Method: m, Path: path})
+	}
+	return endpoints
 }
 
-func pythonHTTPMethod(method string) string {
-	switch strings.ToLower(method) {
+// extractFlaskMethods extracts HTTP verb strings from a list literal: ["GET", "POST"].
+func extractFlaskMethods(node *sitter.Node, content []byte) []string {
+	if node == nil || node.Type() != "list" {
+		return nil
+	}
+	var methods []string
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child.Type() == "string" {
+			m := strings.ToUpper(unquote(nodeText(child, content)))
+			if isHTTPVerb(m) {
+				methods = append(methods, m)
+			}
+		}
+	}
+	return methods
+}
+
+func toHTTPMethod(name string) string {
+	switch strings.ToLower(name) {
 	case "get":
 		return "GET"
 	case "post":
@@ -82,8 +182,14 @@ func pythonHTTPMethod(method string) string {
 		return "DELETE"
 	case "patch":
 		return "PATCH"
-	case "route":
-		return "GET"
 	}
 	return ""
+}
+
+func isHTTPVerb(s string) bool {
+	switch s {
+	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
+		return true
+	}
+	return false
 }

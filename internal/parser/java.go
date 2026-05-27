@@ -9,8 +9,7 @@ import (
 	"endpoint-parser/internal/model"
 )
 
-var javaLang = java.GetLanguage()
-
+// springMappings maps Spring annotation names to HTTP methods.
 var springMappings = map[string]string{
 	"GetMapping":    "GET",
 	"PostMapping":   "POST",
@@ -19,50 +18,59 @@ var springMappings = map[string]string{
 	"PatchMapping":  "PATCH",
 }
 
-func parseJava(content []byte) []model.Endpoint {
-	p := sitter.NewParser()
-	p.SetLanguage(javaLang)
-	tree := p.Parse(nil, content)
-	defer tree.Close()
+type javaParser struct{}
 
+func (javaParser) Language() model.Language { return model.LangJava }
+
+func (javaParser) Parse(content []byte) []model.Endpoint {
+	return parseWithTreeSitter(java.GetLanguage(), content, extractSpringEndpoints)
+}
+
+// extractSpringEndpoints collects @GetMapping / @PostMapping / @RequestMapping annotations.
+func extractSpringEndpoints(root *sitter.Node, content []byte) []model.Endpoint {
 	var endpoints []model.Endpoint
-
-	walkTree(tree.RootNode(), func(node *sitter.Node) {
-		if node.Type() != "annotation" {
-			return
+	walkTree(root, func(node *sitter.Node) {
+		if endpoint, ok := extractSpringAnnotation(node, content); ok {
+			endpoints = append(endpoints, endpoint)
 		}
-		nameNode := node.ChildByFieldName("name")
-		if nameNode == nil {
-			return
-		}
-		name := nodeText(nameNode, content)
-
-		httpMethod, ok := springMappings[name]
-		if !ok {
-			if name != "RequestMapping" {
-				return
-			}
-		}
-
-		path := javaAnnotationPath(node, content)
-		if path == "" {
-			return
-		}
-
-		if name == "RequestMapping" {
-			httpMethod = javaRequestMappingMethod(node, content)
-			if httpMethod == "" {
-				return // no method attr = class-level prefix, skip
-			}
-		}
-
-		endpoints = append(endpoints, model.Endpoint{Method: httpMethod, Path: path})
 	})
-
 	return endpoints
 }
 
-func javaAnnotationPath(annotation *sitter.Node, content []byte) string {
+func extractSpringAnnotation(node *sitter.Node, content []byte) (model.Endpoint, bool) {
+	if node.Type() != "annotation" {
+		return model.Endpoint{}, false
+	}
+	nameNode := node.ChildByFieldName("name")
+	if nameNode == nil {
+		return model.Endpoint{}, false
+	}
+	name := nodeText(nameNode, content)
+
+	httpMethod, isShorthand := springMappings[name]
+	if !isShorthand && name != "RequestMapping" {
+		return model.Endpoint{}, false
+	}
+
+	path := extractAnnotationPath(node, content)
+	if path == "" {
+		return model.Endpoint{}, false
+	}
+
+	if name == "RequestMapping" {
+		httpMethod = extractRequestMappingMethod(node, content)
+		if httpMethod == "" {
+			// no method attr = class-level prefix, not an endpoint
+			return model.Endpoint{}, false
+		}
+	}
+
+	return model.Endpoint{Method: httpMethod, Path: path}, true
+}
+
+// extractAnnotationPath reads the path string from annotation arguments.
+// Handles both @GetMapping("/path") and @GetMapping(value="/path") / @GetMapping(path="/path").
+func extractAnnotationPath(annotation *sitter.Node, content []byte) string {
 	argList := annotation.ChildByFieldName("arguments")
 	if argList == nil {
 		return ""
@@ -79,10 +87,7 @@ func javaAnnotationPath(annotation *sitter.Node, content []byte) string {
 				continue
 			}
 			k := nodeText(key, content)
-			if k != "value" && k != "path" {
-				continue
-			}
-			if val.Type() == "string_literal" {
+			if (k == "value" || k == "path") && val.Type() == "string_literal" {
 				return unquote(nodeText(val, content))
 			}
 		}
@@ -90,7 +95,8 @@ func javaAnnotationPath(annotation *sitter.Node, content []byte) string {
 	return ""
 }
 
-func javaRequestMappingMethod(annotation *sitter.Node, content []byte) string {
+// extractRequestMappingMethod reads the method= attribute from @RequestMapping.
+func extractRequestMappingMethod(annotation *sitter.Node, content []byte) string {
 	argList := annotation.ChildByFieldName("arguments")
 	if argList == nil {
 		return ""

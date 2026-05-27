@@ -9,8 +9,7 @@ import (
 	"endpoint-parser/internal/model"
 )
 
-var typescriptLang = tsLang.GetLanguage()
-
+// nestDecorators maps NestJS HTTP decorator names to HTTP verbs.
 var nestDecorators = map[string]string{
 	"Get":    "GET",
 	"Post":   "POST",
@@ -19,64 +18,72 @@ var nestDecorators = map[string]string{
 	"Patch":  "PATCH",
 }
 
-func parseTypeScript(content []byte) []model.Endpoint {
-	p := sitter.NewParser()
-	p.SetLanguage(typescriptLang)
-	tree := p.Parse(nil, content)
-	defer tree.Close()
+type typeScriptParser struct{}
 
-	root := tree.RootNode()
+func (typeScriptParser) Language() model.Language { return model.LangTypeScript }
+
+func (typeScriptParser) Parse(content []byte) []model.Endpoint {
+	return parseWithTreeSitter(tsLang.GetLanguage(), content, extractTypeScriptEndpoints)
+}
+
+// extractTypeScriptEndpoints handles NestJS class-based controllers and Express-style routes.
+// NestJS is checked first; Express-style routes are collected as a fallback (deduped).
+func extractTypeScriptEndpoints(root *sitter.Node, content []byte) []model.Endpoint {
 	var endpoints []model.Endpoint
 
-	// NestJS: walk class declarations
 	walkTree(root, func(node *sitter.Node) {
 		if node.Type() == "class_declaration" {
-			endpoints = append(endpoints, nestClassEndpoints(node, content)...)
+			endpoints = append(endpoints, extractNestControllerEndpoints(node, content)...)
 		}
 	})
 
-	// Express-style TS routes (fallback)
 	endpoints = append(endpoints, extractExpressEndpoints(root, content)...)
-
 	return deduplicateEndpoints(endpoints)
 }
 
-func nestClassEndpoints(classNode *sitter.Node, content []byte) []model.Endpoint {
-	basePath := ""
-
-	// @Controller may be on parent export_statement (export class Foo) or direct child
-	searchForController := func(parent *sitter.Node) {
-		if parent == nil {
-			return
-		}
-		for i := 0; i < int(parent.ChildCount()); i++ {
-			child := parent.Child(i)
-			if child.Type() == "decorator" {
-				if path, ok := decoratorArg(child, "Controller", content); ok {
-					basePath = path
-				}
-			}
-		}
-	}
-	searchForController(classNode.Parent())
-	searchForController(classNode)
-
-	// Find class body
-	var classBody *sitter.Node
-	for i := 0; i < int(classNode.ChildCount()); i++ {
-		if classNode.Child(i).Type() == "class_body" {
-			classBody = classNode.Child(i)
-			break
-		}
-	}
+// extractNestControllerEndpoints extracts routes from a NestJS @Controller class.
+func extractNestControllerEndpoints(classNode *sitter.Node, content []byte) []model.Endpoint {
+	basePath := resolveControllerBasePath(classNode, content)
+	classBody := findClassBody(classNode)
 	if classBody == nil {
 		return nil
 	}
+	return extractMethodEndpoints(classBody, basePath, content)
+}
 
+// resolveControllerBasePath finds the @Controller('prefix') path for the class.
+// The decorator may appear on the class itself or on its parent export_statement.
+func resolveControllerBasePath(classNode *sitter.Node, content []byte) string {
+	if path, ok := findControllerDecorator(classNode, content); ok {
+		return path
+	}
+	if path, ok := findControllerDecorator(classNode.Parent(), content); ok {
+		return path
+	}
+	return ""
+}
+
+func findControllerDecorator(node *sitter.Node, content []byte) (string, bool) {
+	if node == nil {
+		return "", false
+	}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child.Type() == "decorator" {
+			if path, ok := decoratorArg(child, "Controller", content); ok {
+				return path, true
+			}
+		}
+	}
+	return "", false
+}
+
+// extractMethodEndpoints iterates class_body children, associating decorators with the
+// method_definition that immediately follows them.
+func extractMethodEndpoints(classBody *sitter.Node, basePath string, content []byte) []model.Endpoint {
 	var endpoints []model.Endpoint
 	var pendingDecorators []*sitter.Node
 
-	// Decorators are siblings of method_definition inside class_body
 	for i := 0; i < int(classBody.ChildCount()); i++ {
 		member := classBody.Child(i)
 		switch member.Type() {
@@ -101,6 +108,17 @@ func nestClassEndpoints(classNode *sitter.Node, content []byte) []model.Endpoint
 	return endpoints
 }
 
+func findClassBody(classNode *sitter.Node) *sitter.Node {
+	for i := 0; i < int(classNode.ChildCount()); i++ {
+		if classNode.Child(i).Type() == "class_body" {
+			return classNode.Child(i)
+		}
+	}
+	return nil
+}
+
+// decoratorArg returns the first string argument of a decorator call with the given name.
+// e.g. @Get(':id') → ":id", true   |   @Get() → "", true   |   @Body() → "", false
 func decoratorArg(decoratorNode *sitter.Node, name string, content []byte) (string, bool) {
 	for i := 0; i < int(decoratorNode.ChildCount()); i++ {
 		child := decoratorNode.Child(i)
@@ -126,6 +144,7 @@ func decoratorArg(decoratorNode *sitter.Node, name string, content []byte) (stri
 	return "", false
 }
 
+// joinPaths concatenates a base path (controller prefix) with a method path.
 func joinPaths(base, path string) string {
 	if base != "" && !strings.HasPrefix(base, "/") {
 		base = "/" + base
@@ -144,7 +163,7 @@ func joinPaths(base, path string) string {
 }
 
 func deduplicateEndpoints(endpoints []model.Endpoint) []model.Endpoint {
-	seen := make(map[string]bool)
+	seen := make(map[string]bool, len(endpoints))
 	result := make([]model.Endpoint, 0, len(endpoints))
 	for _, e := range endpoints {
 		key := e.Method + ":" + e.Path
