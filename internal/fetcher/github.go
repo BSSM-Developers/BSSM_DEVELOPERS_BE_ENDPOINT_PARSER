@@ -18,8 +18,12 @@ var routeNamePatterns = []string{
 	"controller", "router", "routes", "handler", "resource",
 }
 
+var routeDirPatterns = []string{
+	"api", "apis", "routes", "controllers", "endpoints", "views", "handlers",
+}
+
 var alwaysIncludeNames = []string{
-	"app.js", "app.ts", "index.js", "server.js", "main.py",
+	"app.js", "app.ts", "index.js", "server.js", "main.py", "app.py", "server.py",
 }
 
 type GitHubFetcher struct {
@@ -148,6 +152,14 @@ func isRouteFile(path string) bool {
 	for _, pattern := range routeNamePatterns {
 		if strings.Contains(base, pattern) {
 			return true
+		}
+	}
+	dir := strings.ToLower(filepath.ToSlash(filepath.Dir(path)))
+	for _, part := range strings.Split(dir, "/") {
+		for _, pattern := range routeDirPatterns {
+			if part == pattern {
+				return true
+			}
 		}
 	}
 	return false
