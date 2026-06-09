@@ -8,10 +8,12 @@ import (
 	"endpoint-parser/internal/fetcher"
 	"endpoint-parser/internal/model"
 	"endpoint-parser/internal/parser"
+	"golang.org/x/sync/singleflight"
 )
 
 type Handler struct {
 	fetcher *fetcher.GitHubFetcher
+	group   singleflight.Group
 }
 
 func NewHandler() *Handler {
@@ -34,13 +36,17 @@ func (h *Handler) HandleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files, err := h.fetcher.FetchRelevantFiles(req.RepoFullName, req.Branch, req.InstallationToken)
+	key := req.RepoFullName + "@" + req.Branch
+	v, err, _ := h.group.Do(key, func() (interface{}, error) {
+		return h.fetcher.FetchRelevantFiles(req.RepoFullName, req.Branch, req.InstallationToken)
+	})
 	if err != nil {
 		log.Printf("fetch error repo=%s: %v", req.RepoFullName, err)
 		http.Error(w, "failed to fetch repository files", http.StatusInternalServerError)
 		return
 	}
 
+	files := v.([]model.FileContent)
 	var endpoints []model.Endpoint
 	for _, file := range files {
 		parsed := parser.Parse(file)

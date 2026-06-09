@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"endpoint-parser/internal/model"
 )
+
+const fetchConcurrency = 10
 
 const maxFileSizeBytes = 100 * 1024 // 100KB
 
@@ -61,7 +64,11 @@ func (f *GitHubFetcher) FetchRelevantFiles(repoFullName, branch, token string) (
 		return nil, fmt.Errorf("fetch tree: %w", err)
 	}
 
-	var files []model.FileContent
+	type candidate struct {
+		entry treeEntry
+		lang  model.Language
+	}
+	var candidates []candidate
 	for _, entry := range tree.Tree {
 		if entry.Type != "blob" || entry.Size > maxFileSizeBytes {
 			continue
@@ -70,12 +77,31 @@ func (f *GitHubFetcher) FetchRelevantFiles(repoFullName, branch, token string) (
 		if !ok || !isRouteFile(entry.Path) {
 			continue
 		}
-		content, err := f.fetchContent(owner, repo, entry.Path, branch, token)
-		if err != nil {
-			continue
-		}
-		files = append(files, model.FileContent{Path: entry.Path, Content: content, Lang: lang})
+		candidates = append(candidates, candidate{entry, lang})
 	}
+
+	files := make([]model.FileContent, 0, len(candidates))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, fetchConcurrency)
+
+	for _, c := range candidates {
+		wg.Add(1)
+		go func(c candidate) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			content, err := f.fetchContent(owner, repo, c.entry.Path, branch, token)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			files = append(files, model.FileContent{Path: c.entry.Path, Content: content, Lang: c.lang})
+			mu.Unlock()
+		}(c)
+	}
+	wg.Wait()
 	return files, nil
 }
 
